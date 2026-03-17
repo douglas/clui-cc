@@ -1,4 +1,3 @@
-import { net } from 'electron'
 import { execFile } from 'child_process'
 import { readFile, readdir, mkdir, writeFile, rm } from 'fs/promises'
 import { join } from 'path'
@@ -307,23 +306,14 @@ export async function uninstallPlugin(
 
 // ─── Helpers ───
 
-function netFetch(url: string): Promise<{ ok: boolean; status: number; body: string }> {
-  return new Promise((resolve, reject) => {
-    const request = net.request(url)
-    request.on('response', (response) => {
-      let body = ''
-      response.on('data', (chunk) => { body += chunk.toString() })
-      response.on('end', () => {
-        resolve({
-          ok: response.statusCode >= 200 && response.statusCode < 300,
-          status: response.statusCode,
-          body,
-        })
-      })
-    })
-    request.on('error', (err) => reject(err))
-    request.end()
-  })
+async function netFetch(url: string): Promise<{ ok: boolean; status: number; body: string }> {
+  const response = await fetch(url)
+  const body = await response.text()
+  return {
+    ok: response.ok,
+    status: response.status,
+    body,
+  }
 }
 
 /** Parse YAML-like frontmatter from SKILL.md (name: ..., description: "...") */

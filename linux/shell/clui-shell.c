@@ -29,7 +29,7 @@
 #define SOCKET_ENV       "CLUI_SOCKET"
 #define SOCKET_DEFAULT   "/tmp/clui-shell.sock"
 #define CONTENT_URL_ENV  "CLUI_CONTENT_URL"
-#define CONTENT_URL_DEFAULT "http://localhost:5173"
+#define CONTENT_URL_DEFAULT "http://127.0.0.1:5173"
 
 #define WINDOW_WIDTH     1040
 #define WINDOW_HEIGHT    720
@@ -68,30 +68,24 @@ static gboolean on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
 static void
 setup_layer_shell(GtkWindow *window)
 {
+    fprintf(stderr, "[layer-shell] Initializing layer shell\n");
     gtk_layer_init_for_window(window);
     gtk_layer_set_layer(window, GTK_LAYER_SHELL_LAYER_OVERLAY);
     gtk_layer_set_namespace(window, "clui-cc");
 
-    /* Don't reserve screen space — overlay floats freely */
+    /* Full-screen transparent overlay — anchor all edges, overlay everything */
     gtk_layer_set_exclusive_zone(window, -1);
 
-    /* Keyboard on demand: gets focus when clicked, transparent otherwise */
     gtk_layer_set_keyboard_mode(window,
         GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
+    fprintf(stderr, "[layer-shell] Keyboard mode=ON_DEMAND\n");
 
-    /* Anchor to ALL edges so the window fills the entire output.
-       The window background is transparent; the webview is positioned
-       at bottom-center via GTK alignment. This avoids compositor
-       sizing issues where anchoring only BOTTOM caused full-screen
-       expansion with opaque background. */
     gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_TOP, TRUE);
     gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
     gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_LEFT, TRUE);
     gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
+    fprintf(stderr, "[layer-shell] Anchored: all 4 edges, exclusive_zone=-1\n");
 
-    /* Paint the GTK window background as fully transparent so the
-       compositor sees an ARGB surface with alpha=0 everywhere except
-       where the webview renders opaque HTML content. */
     GtkCssProvider *css = gtk_css_provider_new();
     gtk_css_provider_load_from_string(css,
         "window.background { background-color: transparent; }");
@@ -100,6 +94,7 @@ setup_layer_shell(GtkWindow *window)
         GTK_STYLE_PROVIDER(css),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(css);
+    fprintf(stderr, "[layer-shell] CSS background set to transparent\n");
 }
 
 /* ─── Input Region (click-through) ─── */
@@ -111,19 +106,23 @@ update_input_region(int x, int y, int width, int height)
 
     GtkNative *native = GTK_NATIVE(main_window);
     GdkSurface *surface = gtk_native_get_surface(native);
-    if (!surface) return;
+    if (!surface) {
+        g_warning("[input-region] No GdkSurface — surface not yet realized?");
+        return;
+    }
 
     cairo_region_t *region;
 
     if (width <= 0 || height <= 0) {
-        /* Empty region = fully click-through */
         region = cairo_region_create();
+        g_message("[input-region] Set to EMPTY (fully click-through)");
     } else {
         cairo_rectangle_int_t rect = { x, y, width, height };
         region = cairo_region_create_rectangle(&rect);
+        g_message("[input-region] Set to {x=%d, y=%d, w=%d, h=%d}",
+                  x, y, width, height);
     }
 
-    /* This calls wl_surface_set_input_region under the hood */
     gdk_surface_set_input_region(surface, region);
     cairo_region_destroy(region);
 }
@@ -173,6 +172,9 @@ on_script_message(WebKitUserContentManager *manager,
     char *json_str = jsc_value_to_json(js_result, 0);
     if (!json_str) return;
 
+    g_message("[script-msg] Received: %.200s%s", json_str,
+              strlen(json_str) > 200 ? "..." : "");
+
     /* Parse to check for local handling */
     JsonParser *parser = json_parser_new();
     if (!json_parser_load_from_data(parser, json_str, -1, NULL)) {
@@ -187,7 +189,11 @@ on_script_message(WebKitUserContentManager *manager,
 
     if (channel) {
         /* Handle window management locally */
-        if (g_strcmp0(channel, "clui:hide-window") == 0) {
+        if (g_strcmp0(channel, "clui:quit") == 0) {
+            fprintf(stderr, "[script-msg] ESC received from JS — quitting\n");
+            g_application_quit(G_APPLICATION(
+                gtk_window_get_application(main_window)));
+        } else if (g_strcmp0(channel, "clui:hide-window") == 0) {
             gtk_widget_set_visible(GTK_WIDGET(main_window), FALSE);
             visible = FALSE;
         } else if (g_strcmp0(channel, "clui:set-input-region") == 0) {
@@ -223,15 +229,32 @@ on_load_changed(WebKitWebView *wv, WebKitLoadEvent event, gpointer data)
     const char *uri = webkit_web_view_get_uri(wv);
     switch (event) {
     case WEBKIT_LOAD_STARTED:
-        g_message("Page load started: %s", uri ? uri : "(null)");
+        fprintf(stderr, "[webview] Load STARTED: %s\n", uri ? uri : "(null)");
+        break;
+    case WEBKIT_LOAD_REDIRECTED:
+        fprintf(stderr, "[webview] Load REDIRECTED: %s\n", uri ? uri : "(null)");
         break;
     case WEBKIT_LOAD_COMMITTED:
-        g_message("Page load committed: %s", uri ? uri : "(null)");
+        fprintf(stderr, "[webview] Load COMMITTED: %s\n", uri ? uri : "(null)");
         break;
     case WEBKIT_LOAD_FINISHED:
-        g_message("Page load finished: %s", uri ? uri : "(null)");
+        fprintf(stderr, "[webview] Load FINISHED: %s\n", uri ? uri : "(null)");
+        fprintf(stderr, "[webview] Widget size: %dx%d\n",
+                gtk_widget_get_width(GTK_WIDGET(wv)),
+                gtk_widget_get_height(GTK_WIDGET(wv)));
+        /* DOM diagnostic (ESC handler is now a UCM user script) */
+        webkit_web_view_evaluate_javascript(wv,
+            "var diag = '[clui-diag] title=' + document.title"
+            " + ' body.children=' + document.body.children.length"
+            " + ' #root=' + (document.getElementById('root')"
+            "   ? document.getElementById('root').children.length : 'MISSING')"
+            " + ' body.bg=' + getComputedStyle(document.body).backgroundColor;"
+            "console.log(diag); diag;",
+            -1, NULL, NULL, NULL, NULL, NULL);
         break;
     default:
+        fprintf(stderr, "[webview] Load event %d: %s\n", event,
+                uri ? uri : "(null)");
         break;
     }
 }
@@ -240,12 +263,25 @@ static gboolean
 on_load_failed(WebKitWebView *wv, WebKitLoadEvent event,
                const char *failing_uri, GError *error, gpointer data)
 {
-    (void)wv;
     (void)event;
     (void)data;
-    g_warning("Page load failed: %s — %s", failing_uri,
-              error ? error->message : "unknown error");
-    return FALSE;
+    fprintf(stderr, "[webview] Load FAILED (event=%d): %s — %s\n", event,
+            failing_uri, error ? error->message : "unknown error");
+
+    /* Show an inline error page so the user sees what went wrong */
+    char *html = g_strdup_printf(
+        "<html><body style='background:#242422;color:#fff;"
+        "font:20px monospace;padding:40px'>"
+        "<h2>CLUI Shell: Load Failed</h2>"
+        "<p>URI: %s</p>"
+        "<p>Error: %s</p>"
+        "<p style='color:#888;margin-top:2em'>Is Vite running? "
+        "Try: npm run linux:dev-renderer</p>"
+        "</body></html>",
+        failing_uri, error ? error->message : "unknown");
+    webkit_web_view_load_html(wv, html, NULL);
+    g_free(html);
+    return TRUE;
 }
 
 /* ─── WebView Setup ─── */
@@ -253,24 +289,40 @@ on_load_failed(WebKitWebView *wv, WebKitLoadEvent event,
 static void
 setup_webview(GtkWindow *window, const char *content_url)
 {
+    fprintf(stderr, "[webview] Setting up WebKitGTK webview\n");
+
     WebKitUserContentManager *ucm = webkit_user_content_manager_new();
 
     /* bridge.js is injected via Vite (inline <script> in HTML) rather than
        UCM user scripts, which are unreliable in WebKitGTK 6.0. The UCM is
        still needed for the script message handler below. */
 
-    /* Register message handler: renderer calls
-       window.webkit.messageHandlers.clui.postMessage({...}) */
     g_signal_connect(ucm, "script-message-received::clui",
                      G_CALLBACK(on_script_message), NULL);
     webkit_user_content_manager_register_script_message_handler(ucm, "clui", NULL);
+    fprintf(stderr, "[webview] Registered 'clui' script message handler\n");
+
+    /* ESC key handler via UCM user script — more reliable than
+       injecting via on_load_changed, fires even during page navigation */
+    WebKitUserScript *esc_script = webkit_user_script_new(
+        "document.addEventListener('keydown', function(e) {"
+        "  if (e.key === 'Escape') {"
+        "    window.webkit.messageHandlers.clui.postMessage("
+        "      {channel: 'clui:quit', args: []});"
+        "  }"
+        "});",
+        WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+        WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END,
+        NULL, NULL);
+    webkit_user_content_manager_add_script(ucm, esc_script);
+    webkit_user_script_unref(esc_script);
+    fprintf(stderr, "[webview] ESC user script injected\n");
 
     webview = WEBKIT_WEB_VIEW(
         g_object_new(WEBKIT_TYPE_WEB_VIEW,
                      "user-content-manager", ucm,
                      NULL));
 
-    /* Connect load-event handlers for debugging */
     g_signal_connect(webview, "load-changed",
                      G_CALLBACK(on_load_changed), NULL);
     g_signal_connect(webview, "load-failed",
@@ -282,18 +334,26 @@ setup_webview(GtkWindow *window, const char *content_url)
 
     gtk_window_set_child(window, GTK_WIDGET(webview));
 
-    /* Transparent webview background — combined with
-       WEBKIT_DISABLE_COMPOSITING_MODE=1 in the environment, this
-       lets the HTML body transparency show through to the compositor */
-    GdkRGBA transparent = { 0.0, 0.0, 0.0, 0.0 };
-    webkit_web_view_set_background_color(webview, &transparent);
+    /* Transparent webview background — desktop shows through, React UI floats */
+    GdkRGBA transparent_bg = { 0.0, 0.0, 0.0, 0.0 };
+    webkit_web_view_set_background_color(webview, &transparent_bg);
+    fprintf(stderr, "[webview] Background set to transparent\n");
 
     /* Always enable JS; dev extras only in debug mode */
     WebKitSettings *settings = webkit_web_view_get_settings(webview);
     webkit_settings_set_enable_javascript(settings, TRUE);
-    webkit_settings_set_enable_developer_extras(settings,
-        g_getenv("CLUI_DEBUG") != NULL);
 
+    gboolean dev_extras = g_getenv("CLUI_DEBUG") != NULL;
+    webkit_settings_set_enable_developer_extras(settings, dev_extras);
+    fprintf(stderr, "[webview] JS=enabled, dev_extras=%s\n",
+            dev_extras ? "yes" : "no");
+
+    fprintf(stderr, "[webview] WebKitGTK %d.%d.%d\n",
+            webkit_get_major_version(),
+            webkit_get_minor_version(),
+            webkit_get_micro_version());
+
+    fprintf(stderr, "[webview] Loading URI: %s\n", content_url);
     webkit_web_view_load_uri(webview, content_url);
 }
 
@@ -359,12 +419,13 @@ on_ipc_connection(GIOChannel *source, GIOCondition condition, gpointer data)
 
     /* Only keep one backend connection at a time */
     if (backend_conn_fd >= 0) {
+        g_message("[ipc] Closing previous backend connection (fd=%d)",
+                  backend_conn_fd);
         close(backend_conn_fd);
     }
     backend_conn_fd = client_fd;
     ipc_read_len = 0;
-
-    /* on_script_message reads backend_conn_fd directly, no signal reconnect needed */
+    g_message("[ipc] Backend connected (fd=%d)", client_fd);
 
     GIOChannel *ch = g_io_channel_unix_new(client_fd);
     g_io_channel_set_encoding(ch, NULL, NULL);
@@ -499,13 +560,6 @@ cleanup(void)
     unlink(socket_path);
 }
 
-static void
-deferred_input_region_clear(gpointer data)
-{
-    (void)data;
-    update_input_region(0, 0, 0, 0);
-}
-
 /* ─── Keyboard Handler ─── */
 
 static gboolean
@@ -513,7 +567,10 @@ on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
                guint keycode, GdkModifierType state, gpointer data)
 {
     (void)ctrl; (void)keycode; (void)state; (void)data;
+    fprintf(stderr, "[key] Pressed: keyval=0x%x keycode=%u state=0x%x\n",
+            keyval, keycode, state);
     if (keyval == GDK_KEY_Escape) {
+        fprintf(stderr, "[key] ESC pressed — quitting\n");
         g_application_quit(G_APPLICATION(
             gtk_window_get_application(main_window)));
         return TRUE;
@@ -528,17 +585,36 @@ on_activate(GtkApplication *app, gpointer user_data)
 {
     (void)user_data;
 
+    fprintf(stderr, "[activate] Creating application window\n");
+
+    GdkDisplay *display = gdk_display_get_default();
+    fprintf(stderr, "[activate] Display: %s\n", gdk_display_get_name(display));
+
+    GListModel *monitors = gdk_display_get_monitors(display);
+    guint n_monitors = g_list_model_get_n_items(monitors);
+    for (guint i = 0; i < n_monitors; i++) {
+        GdkMonitor *mon = GDK_MONITOR(g_list_model_get_item(monitors, i));
+        GdkRectangle geom;
+        gdk_monitor_get_geometry(mon, &geom);
+        fprintf(stderr, "[activate] Monitor %u: %dx%d+%d+%d scale=%.1f\n",
+                i, geom.width, geom.height, geom.x, geom.y,
+                gdk_monitor_get_scale_factor(mon) * 1.0);
+        g_object_unref(mon);
+    }
+
+    const char *gsk = g_getenv("GSK_RENDERER");
+    const char *wdcm = g_getenv("WEBKIT_DISABLE_COMPOSITING_MODE");
+    fprintf(stderr, "[activate] Env: GSK_RENDERER=%s, WEBKIT_DISABLE_COMPOSITING_MODE=%s\n",
+            gsk ? gsk : "(unset)", wdcm ? wdcm : "(unset)");
+
     main_window = GTK_WINDOW(gtk_application_window_new(app));
     gtk_window_set_title(main_window, "CLUI CC");
 
-    /* Layer shell: overlay, non-activating, click-through */
     setup_layer_shell(main_window);
 
-    /* Content URL */
     const char *content_url = g_getenv(CONTENT_URL_ENV);
     if (!content_url) content_url = CONTENT_URL_DEFAULT;
 
-    /* WebKitGTK webview — bridge.js is served inline via Vite HTML */
     setup_webview(main_window, content_url);
 
     /* ESC key closes the overlay */
@@ -546,18 +622,18 @@ on_activate(GtkApplication *app, gpointer user_data)
     g_signal_connect(key_ctrl, "key-pressed",
                      G_CALLBACK(on_key_pressed), NULL);
     gtk_widget_add_controller(GTK_WIDGET(main_window), key_ctrl);
+    fprintf(stderr, "[activate] ESC key handler attached\n");
 
-    /* Start with empty input region (fully click-through) until renderer
-       reports its interactive bounds */
     gtk_widget_set_visible(GTK_WIDGET(main_window), TRUE);
+    fprintf(stderr, "[activate] Window set visible=TRUE, size=%dx%d\n",
+            gtk_widget_get_width(GTK_WIDGET(main_window)),
+            gtk_widget_get_height(GTK_WIDGET(main_window)));
 
-    /* Defer input region setup until after the surface is realized */
-    g_idle_add_once((GSourceOnceFunc)deferred_input_region_clear, NULL);
-
-    /* IPC socket for toggle script + backend */
     const char *socket_path = g_getenv(SOCKET_ENV);
     if (!socket_path) socket_path = SOCKET_DEFAULT;
     setup_ipc_socket(socket_path);
+
+    fprintf(stderr, "[activate] Shell ready — waiting for page load\n");
 }
 
 /* ─── Main ─── */

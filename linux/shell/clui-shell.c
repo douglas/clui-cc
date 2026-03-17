@@ -55,6 +55,11 @@ static char *load_bridge_js(void);
 static void on_script_message(WebKitUserContentManager *manager,
                               JSCValue *js_result,
                               gpointer user_data);
+static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent event,
+                            gpointer data);
+static gboolean on_load_failed(WebKitWebView *wv, WebKitLoadEvent event,
+                               const char *failing_uri, GError *error,
+                               gpointer data);
 
 /* ─── Layer Shell Setup ─── */
 
@@ -76,8 +81,9 @@ setup_layer_shell(GtkWindow *window)
     gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
     gtk_layer_set_margin(window, GTK_LAYER_SHELL_EDGE_BOTTOM, PILL_BOTTOM_MARGIN);
 
-    /* Default size */
+    /* Default size + hard minimum so layer-shell respects it */
     gtk_window_set_default_size(window, WINDOW_WIDTH, WINDOW_HEIGHT);
+    gtk_widget_set_size_request(GTK_WIDGET(window), WINDOW_WIDTH, WINDOW_HEIGHT);
 }
 
 /* ─── Input Region (click-through) ─── */
@@ -192,6 +198,40 @@ on_script_message(WebKitUserContentManager *manager,
     g_object_unref(parser);
 }
 
+/* ─── WebView Load Handlers ─── */
+
+static void
+on_load_changed(WebKitWebView *wv, WebKitLoadEvent event, gpointer data)
+{
+    (void)data;
+    const char *uri = webkit_web_view_get_uri(wv);
+    switch (event) {
+    case WEBKIT_LOAD_STARTED:
+        g_message("Page load started: %s", uri ? uri : "(null)");
+        break;
+    case WEBKIT_LOAD_COMMITTED:
+        g_message("Page load committed: %s", uri ? uri : "(null)");
+        break;
+    case WEBKIT_LOAD_FINISHED:
+        g_message("Page load finished: %s", uri ? uri : "(null)");
+        break;
+    default:
+        break;
+    }
+}
+
+static gboolean
+on_load_failed(WebKitWebView *wv, WebKitLoadEvent event,
+               const char *failing_uri, GError *error, gpointer data)
+{
+    (void)wv;
+    (void)event;
+    (void)data;
+    g_warning("Page load failed: %s — %s", failing_uri,
+              error ? error->message : "unknown error");
+    return FALSE;
+}
+
 /* ─── WebView Setup ─── */
 
 static void
@@ -221,15 +261,26 @@ setup_webview(GtkWindow *window, const char *content_url, const char *bridge_js)
                      "user-content-manager", ucm,
                      NULL));
 
+    /* Connect load-event handlers for debugging */
+    g_signal_connect(webview, "load-changed",
+                     G_CALLBACK(on_load_changed), NULL);
+    g_signal_connect(webview, "load-failed",
+                     G_CALLBACK(on_load_failed), NULL);
+
+    /* Ensure the webview claims the full window area */
+    gtk_widget_set_size_request(GTK_WIDGET(webview), WINDOW_WIDTH, WINDOW_HEIGHT);
+    gtk_widget_set_hexpand(GTK_WIDGET(webview), TRUE);
+    gtk_widget_set_vexpand(GTK_WIDGET(webview), TRUE);
+
     /* Transparent background for the overlay */
     GdkRGBA transparent = { 0.0, 0.0, 0.0, 0.0 };
     webkit_web_view_set_background_color(webview, &transparent);
 
-    /* Enable dev tools in debug mode */
-    if (g_getenv("CLUI_DEBUG")) {
-        WebKitSettings *settings = webkit_web_view_get_settings(webview);
-        webkit_settings_set_enable_developer_extras(settings, TRUE);
-    }
+    /* Always enable JS; dev extras only in debug mode */
+    WebKitSettings *settings = webkit_web_view_get_settings(webview);
+    webkit_settings_set_enable_javascript(settings, TRUE);
+    webkit_settings_set_enable_developer_extras(settings,
+        g_getenv("CLUI_DEBUG") != NULL);
 
     gtk_window_set_child(window, GTK_WIDGET(webview));
     webkit_web_view_load_uri(webview, content_url);

@@ -368,7 +368,25 @@ handle_ipc_message(const char *msg)
     JsonObject *obj = json_node_get_object(root);
     const char *cmd = json_object_get_string_member(obj, "cmd");
 
+    /* Messages without "cmd" may have "type" (backend protocol) */
     if (!cmd) {
+        const char *type = json_object_get_string_member(obj, "type");
+        if (type && (g_strcmp0(type, "resolve") == 0 ||
+                     g_strcmp0(type, "reject") == 0 ||
+                     g_strcmp0(type, "broadcast") == 0)) {
+            /* Forward the entire JSON message to the webview for bridge.js
+               to dispatch via __cluiDispatch / __cluiResolve / __cluiReject */
+            char *escaped = g_strescape(msg, "");
+            char *js = g_strdup_printf(
+                "window.__cluiHandleBackendMessage && "
+                "window.__cluiHandleBackendMessage(\"%s\")", escaped);
+            if (webview) {
+                webkit_web_view_evaluate_javascript(webview,
+                    js, -1, NULL, NULL, NULL, NULL, NULL);
+            }
+            g_free(js);
+            g_free(escaped);
+        }
         g_object_unref(parser);
         return;
     }

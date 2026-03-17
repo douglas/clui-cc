@@ -52,6 +52,25 @@
   }
 
   /**
+   * Central handler for all backend messages relayed through GTK shell.
+   * The C shell calls this with a JSON string for resolve/reject/broadcast.
+   */
+  window.__cluiHandleBackendMessage = function (jsonStr) {
+    try {
+      const msg = JSON.parse(jsonStr)
+      if (msg.type === 'resolve') {
+        window.__cluiResolve(msg.id, msg.result)
+      } else if (msg.type === 'reject') {
+        window.__cluiReject(msg.id, msg.error)
+      } else if (msg.type === 'broadcast') {
+        window.__cluiDispatch(msg.channel, ...msg.args)
+      }
+    } catch (e) {
+      console.error('[clui bridge] Failed to parse backend message:', e)
+    }
+  }
+
+  /**
    * Send a message to the Node.js backend (invoke = request/response).
    * The GTK shell relays this over the Unix socket and routes the response back.
    */

@@ -21,7 +21,7 @@
     "linux:build-shell": "cd linux/shell && meson setup builddir --wipe 2>/dev/null; meson setup builddir && meson compile -C builddir",
     "linux:build-renderer": "vite build --config linux/vite.config.ts",
     "linux:dev-renderer": "vite dev --config linux/vite.config.ts",
-    "linux:dev": "CLUI_CONTENT_URL=http://localhost:5173 node --loader ts-node/esm linux/main.ts",
+    "linux:dev": "CLUI_BRIDGE_JS=\"$PWD/linux/bridge.js\" CLUI_CONTENT_URL=http://localhost:5173 tsx linux/main.ts",
     "linux:start": "node dist/linux/main.js"
   },
   "dependencies": {
@@ -52,6 +52,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwindcss": "^4.2.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0"
   }

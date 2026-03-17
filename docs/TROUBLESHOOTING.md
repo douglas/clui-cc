@@ -134,3 +134,29 @@ Try:
 
 - `Cmd+Shift+K`
 - Confirm app is running from the menu bar tray
+
+## Linux: Gray Window Covers Full Screen
+
+The GTK4 shell renders a full-screen gray rectangle instead of the 1040x720 pill.
+
+Cause: `gtk4-layer-shell` requires `gtk_widget_set_size_request()` to enforce sizing — `gtk_window_set_default_size()` alone is not reliable on all compositors.
+
+Check the build is current:
+
+```bash
+npm run linux:build-shell
+```
+
+## Linux: WebKitGTK Fails to Load Page
+
+Check console output for "Page load failed" messages (the shell logs load events). Verify the Vite dev server is running and bound to `127.0.0.1`:
+
+```bash
+npm run linux:dev-renderer
+```
+
+Then confirm it's reachable:
+
+```bash
+curl -s http://127.0.0.1:5173/ | head -5
+```

@@ -17,7 +17,10 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "doctor": "bash scripts/doctor.sh",
-    "postinstall": "electron-builder install-app-deps && bash scripts/patch-dev-icon.sh"
+    "postinstall": "electron-builder install-app-deps && bash scripts/patch-dev-icon.sh",
+    "linux:build-shell": "cd linux/shell && meson setup builddir --wipe 2>/dev/null; meson setup builddir && meson compile -C builddir",
+    "linux:dev": "CLUI_CONTENT_URL=http://localhost:5173 node --loader ts-node/esm linux/main.ts",
+    "linux:start": "node dist/linux/main.js"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

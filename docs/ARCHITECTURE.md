@@ -170,3 +170,58 @@ User types prompt
     → sessionStore.handleNormalizedEvent() updates messages
     → React re-renders ConversationView
 ```
+
+## Linux / Hyprland Port (`linux/`)
+
+On Linux (Hyprland/wlroots), Electron is replaced by a hybrid architecture:
+
+```
+┌──────────────────┐    Unix Socket     ┌───────────────────┐
+│ GTK4 Shell       │ ◄────────────────► │ Node.js Backend   │
+│ (clui-shell.c)   │                    │ (ipc-server.ts)   │
+│                  │                    │                   │
+│ • gtk4-layer-shell│                   │ • ControlPlane    │
+│ • WebKitGTK view │                    │ • RunManager      │
+│ • Input regions  │                    │ • PermissionServer │
+│ • IPC socket     │                    │ • Marketplace     │
+└──────────────────┘                    └───────────────────┘
+        │ loads                                 │ spawns
+        ▼                                       ▼
+┌──────────────────┐                    ┌───────────────────┐
+│ React Frontend   │                    │ claude CLI        │
+│ (same code)      │                    │ (subprocess)      │
+│ + bridge.js      │                    │                   │
+└──────────────────┘                    └───────────────────┘
+```
+
+### GTK4 Shell (`linux/shell/clui-shell.c`)
+
+~400 lines of C using `gtk4-layer-shell` for Wayland overlay behavior:
+- Layer `OVERLAY` — always on top, above all windows
+- `exclusive_zone = -1` — doesn't push other windows
+- `keyboard_interactivity = ON_DEMAND` — keyboard focus when needed
+- Dynamic input regions via `gdk_surface_set_input_region()` for click-through
+- Built with meson: `cd linux/shell && meson setup builddir && meson compile -C builddir`
+
+### WebKitGTK Bridge (`linux/bridge.js`)
+
+Injected into WebKitGTK at document start, provides the `window.clui` API matching the Electron preload's `CluiAPI` interface. Uses `window.webkit.messageHandlers.clui.postMessage()` for renderer → shell communication and `window.__cluiDispatch()` callbacks for shell → renderer events.
+
+### IPC Server (`linux/ipc-server.ts`)
+
+Unix socket server replacing Electron's `ipcMain`. Newline-delimited JSON protocol:
+- `invoke` — request/response (replaces `ipcMain.handle`)
+- `send` — fire-and-forget (replaces `ipcMain.on`)
+- `broadcast` — backend → renderer events
+
+### Platform Tool Swaps
+
+| macOS | Linux |
+|-------|-------|
+| `screencapture -i` | `slurp` + `grim -g` |
+| AppleScript terminal launch | `$TERMINAL -e` |
+| `app.dock.hide()` | Not needed (layer-shell) |
+| `setIgnoreMouseEvents` | `gdk_surface_set_input_region` |
+| `dialog.showOpenDialog` | `zenity --file-selection` |
+| `shell.openExternal` | `xdg-open` |
+| `globalShortcut` | Hyprland `bind` + `toggle.sh` |

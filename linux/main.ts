@@ -13,7 +13,7 @@ import { startIPCServer } from './ipc-server'
 import { log, flushLogs } from '../src/main/logger'
 
 const SOCKET_PATH = process.env.CLUI_SOCKET || '/tmp/clui-shell.sock'
-const CONTENT_URL = process.env.CLUI_CONTENT_URL || 'http://localhost:5173'
+const CONTENT_URL = process.env.CLUI_CONTENT_URL || 'http://127.0.0.1:5173'
 
 // Resolve GTK shell binary — check common locations
 function findShellBinary(): string {

@@ -21,7 +21,8 @@
     "linux:build-shell": "cd linux/shell && meson setup builddir --wipe 2>/dev/null; meson setup builddir && meson compile -C builddir",
     "linux:build-renderer": "vite build --config linux/vite.config.ts",
     "linux:dev-renderer": "vite dev --config linux/vite.config.ts",
-    "linux:dev": "CLUI_BRIDGE_JS=\"$PWD/linux/bridge.js\" CLUI_CONTENT_URL=http://localhost:5173 tsx linux/main.ts",
+    "linux:dev": "WEBKIT_DISABLE_COMPOSITING_MODE=1 CLUI_BRIDGE_JS=\"$PWD/linux/bridge.js\" CLUI_CONTENT_URL=http://127.0.0.1:5173 tsx linux/main.ts",
+    "linux:test-webview": "npm run linux:build-shell && WEBKIT_DISABLE_COMPOSITING_MODE=1 ./linux/shell/builddir/webview-test",
     "linux:start": "node dist/linux/main.js"
   },
   "dependencies": {

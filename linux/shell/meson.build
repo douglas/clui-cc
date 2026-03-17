@@ -14,3 +14,8 @@ executable('clui-shell',
   install: true,
   install_dir: get_option('bindir'),
 )
+
+executable('webview-test',
+  'webview-test.c',
+  dependencies: [gtk4, layer_shell, webkitgtk],
+)

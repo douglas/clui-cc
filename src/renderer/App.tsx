@@ -57,8 +57,65 @@ export default function App() {
     })
   }, [])
 
-  // OS-level click-through (RAF-throttled to avoid per-pixel IPC)
+  // OS-level click-through
+  // macOS: per-mousemove toggle of setIgnoreMouseEvents
+  // Linux/WebKitGTK: compute union bounding rect of [data-clui-ui] and set input region
   useEffect(() => {
+    const isLinux = typeof (window as any).__cluiSetInputRegion === 'function'
+
+    if (isLinux) {
+      // Linux: observe layout changes and update the Wayland input region
+      let rafId = 0
+      const updateRegion = () => {
+        const elements = document.querySelectorAll('[data-clui-ui]')
+        if (elements.length === 0) {
+          (window as any).__cluiSetInputRegion(0, 0, 0, 0)
+          return
+        }
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+        elements.forEach((el) => {
+          const rect = el.getBoundingClientRect()
+          if (rect.width === 0 || rect.height === 0) return
+          minX = Math.min(minX, rect.left)
+          minY = Math.min(minY, rect.top)
+          maxX = Math.max(maxX, rect.right)
+          maxY = Math.max(maxY, rect.bottom)
+        })
+        if (minX === Infinity) {
+          (window as any).__cluiSetInputRegion(0, 0, 0, 0)
+        } else {
+          const scale = window.devicePixelRatio || 1
+          (window as any).__cluiSetInputRegion(
+            Math.floor(minX * scale),
+            Math.floor(minY * scale),
+            Math.ceil((maxX - minX) * scale),
+            Math.ceil((maxY - minY) * scale)
+          )
+        }
+      }
+
+      const scheduleUpdate = () => {
+        cancelAnimationFrame(rafId)
+        rafId = requestAnimationFrame(updateRegion)
+      }
+
+      const observer = new MutationObserver(scheduleUpdate)
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true })
+
+      const resizeObserver = new ResizeObserver(scheduleUpdate)
+      resizeObserver.observe(document.documentElement)
+
+      // Initial update
+      scheduleUpdate()
+
+      return () => {
+        cancelAnimationFrame(rafId)
+        observer.disconnect()
+        resizeObserver.disconnect()
+      }
+    }
+
+    // macOS: per-mousemove toggle
     if (!window.clui?.setIgnoreMouseEvents) return
     let lastIgnored: boolean | null = null
 

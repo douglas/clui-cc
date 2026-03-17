@@ -212,7 +212,32 @@ Injected into WebKitGTK at document start, provides the `window.clui` API matchi
 Unix socket server replacing Electron's `ipcMain`. Newline-delimited JSON protocol:
 - `invoke` — request/response (replaces `ipcMain.handle`)
 - `send` — fire-and-forget (replaces `ipcMain.on`)
-- `broadcast` — backend → renderer events
+- `broadcast` — backend → renderer events (routed through GTK shell's `evaluate_javascript`)
+
+### IPC Message Flow
+
+```
+Renderer → Backend (invoke):
+  bridge.js postMessage → GTK shell socket write → ipc-server handler → socket resolve/reject
+  → GTK shell __cluiHandleBackendMessage() → bridge.js __cluiResolve/__cluiReject
+
+Backend → Renderer (broadcast):
+  ipc-server broadcast() → socket write {"type":"broadcast",...}
+  → GTK shell evaluate_javascript(__cluiHandleBackendMessage) → bridge.js __cluiDispatch
+```
+
+### Click-Through (Input Regions)
+
+On Linux, the renderer uses `MutationObserver` + `ResizeObserver` to compute the union bounding rect of all `[data-clui-ui]` elements, then sends this rect to the GTK shell via `__cluiSetInputRegion()`. The shell calls `gdk_surface_set_input_region()` to set the Wayland input region. Areas outside the rect are fully click-through.
+
+### Building on Linux
+
+```sh
+npm run linux:build-shell      # Compile GTK4 shell (requires gtk4, gtk4-layer-shell, webkitgtk-6.0)
+npm run linux:build-renderer   # Build React frontend with standalone Vite config
+npm run linux:dev-renderer     # Dev server for renderer (port 5173)
+npm run linux:dev              # Start Node.js backend + GTK shell (connects to dev server)
+```
 
 ### Platform Tool Swaps
 

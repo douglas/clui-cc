@@ -9,6 +9,13 @@
 ;(function () {
   'use strict'
 
+  /* Guard against double-injection (UCM + evaluate_javascript fallback) */
+  if (window.clui) {
+    console.log('[clui bridge] already initialized, skipping')
+    return
+  }
+  console.log('[clui bridge] initializing...')
+
   /* ─── Pending invoke callbacks ─── */
   const pendingInvokes = new Map() // id → { resolve, reject }
   let invokeCounter = 0

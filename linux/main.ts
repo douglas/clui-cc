@@ -52,6 +52,7 @@ function main(): void {
       ...process.env,
       CLUI_SOCKET: SOCKET_PATH,
       CLUI_CONTENT_URL: CONTENT_URL,
+      WEBKIT_DISABLE_COMPOSITING_MODE: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })

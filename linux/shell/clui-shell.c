@@ -46,12 +46,11 @@ static int           backend_conn_fd = -1;
 /* ─── Forward declarations ─── */
 
 static void setup_layer_shell(GtkWindow *window);
-static void setup_webview(GtkWindow *window, const char *content_url, const char *bridge_js);
+static void setup_webview(GtkWindow *window, const char *content_url);
 static void setup_ipc_socket(const char *socket_path);
 static void handle_ipc_message(const char *msg);
 static void update_input_region(int x, int y, int width, int height);
 static void toggle_visibility(void);
-static char *load_bridge_js(void);
 static void on_script_message(WebKitUserContentManager *manager,
                               JSCValue *js_result,
                               gpointer user_data);
@@ -59,6 +58,9 @@ static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent event,
                             gpointer data);
 static gboolean on_load_failed(WebKitWebView *wv, WebKitLoadEvent event,
                                const char *failing_uri, GError *error,
+                               gpointer data);
+static gboolean on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
+                               guint keycode, GdkModifierType state,
                                gpointer data);
 
 /* ─── Layer Shell Setup ─── */
@@ -77,13 +79,27 @@ setup_layer_shell(GtkWindow *window)
     gtk_layer_set_keyboard_mode(window,
         GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
 
-    /* Anchor to bottom-center */
+    /* Anchor to ALL edges so the window fills the entire output.
+       The window background is transparent; the webview is positioned
+       at bottom-center via GTK alignment. This avoids compositor
+       sizing issues where anchoring only BOTTOM caused full-screen
+       expansion with opaque background. */
+    gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_TOP, TRUE);
     gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE);
-    gtk_layer_set_margin(window, GTK_LAYER_SHELL_EDGE_BOTTOM, PILL_BOTTOM_MARGIN);
+    gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_LEFT, TRUE);
+    gtk_layer_set_anchor(window, GTK_LAYER_SHELL_EDGE_RIGHT, TRUE);
 
-    /* Default size + hard minimum so layer-shell respects it */
-    gtk_window_set_default_size(window, WINDOW_WIDTH, WINDOW_HEIGHT);
-    gtk_widget_set_size_request(GTK_WIDGET(window), WINDOW_WIDTH, WINDOW_HEIGHT);
+    /* Paint the GTK window background as fully transparent so the
+       compositor sees an ARGB surface with alpha=0 everywhere except
+       where the webview renders opaque HTML content. */
+    GtkCssProvider *css = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(css,
+        "window.background { background-color: transparent; }");
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(),
+        GTK_STYLE_PROVIDER(css),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(css);
 }
 
 /* ─── Input Region (click-through) ─── */
@@ -235,20 +251,13 @@ on_load_failed(WebKitWebView *wv, WebKitLoadEvent event,
 /* ─── WebView Setup ─── */
 
 static void
-setup_webview(GtkWindow *window, const char *content_url, const char *bridge_js)
+setup_webview(GtkWindow *window, const char *content_url)
 {
     WebKitUserContentManager *ucm = webkit_user_content_manager_new();
 
-    /* Inject the bridge script that creates window.clui */
-    if (bridge_js) {
-        WebKitUserScript *script = webkit_user_script_new(
-            bridge_js,
-            WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
-            WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
-            NULL, NULL);
-        webkit_user_content_manager_add_script(ucm, script);
-        webkit_user_script_unref(script);
-    }
+    /* bridge.js is injected via Vite (inline <script> in HTML) rather than
+       UCM user scripts, which are unreliable in WebKitGTK 6.0. The UCM is
+       still needed for the script message handler below. */
 
     /* Register message handler: renderer calls
        window.webkit.messageHandlers.clui.postMessage({...}) */
@@ -267,12 +276,15 @@ setup_webview(GtkWindow *window, const char *content_url, const char *bridge_js)
     g_signal_connect(webview, "load-failed",
                      G_CALLBACK(on_load_failed), NULL);
 
-    /* Ensure the webview claims the full window area */
-    gtk_widget_set_size_request(GTK_WIDGET(webview), WINDOW_WIDTH, WINDOW_HEIGHT);
+    /* Webview fills the full-screen window */
     gtk_widget_set_hexpand(GTK_WIDGET(webview), TRUE);
     gtk_widget_set_vexpand(GTK_WIDGET(webview), TRUE);
 
-    /* Transparent background for the overlay */
+    gtk_window_set_child(window, GTK_WIDGET(webview));
+
+    /* Transparent webview background — combined with
+       WEBKIT_DISABLE_COMPOSITING_MODE=1 in the environment, this
+       lets the HTML body transparency show through to the compositor */
     GdkRGBA transparent = { 0.0, 0.0, 0.0, 0.0 };
     webkit_web_view_set_background_color(webview, &transparent);
 
@@ -282,7 +294,6 @@ setup_webview(GtkWindow *window, const char *content_url, const char *bridge_js)
     webkit_settings_set_enable_developer_extras(settings,
         g_getenv("CLUI_DEBUG") != NULL);
 
-    gtk_window_set_child(window, GTK_WIDGET(webview));
     webkit_web_view_load_uri(webview, content_url);
 }
 
@@ -469,55 +480,6 @@ handle_ipc_message(const char *msg)
     g_object_unref(parser);
 }
 
-/* ─── Bridge JS Loader ─── */
-
-static char *
-load_bridge_js(void)
-{
-    /* Look for bridge.js next to the binary, or in known locations */
-    const char *candidates[] = {
-        NULL, /* filled below */
-        "/usr/share/clui-cc/bridge.js",
-        "/usr/local/share/clui-cc/bridge.js",
-    };
-
-    /* Build path relative to executable */
-    char exe_dir[4096];
-    ssize_t len = readlink("/proc/self/exe", exe_dir, sizeof(exe_dir) - 1);
-    if (len > 0) {
-        exe_dir[len] = '\0';
-        char *slash = strrchr(exe_dir, '/');
-        if (slash) {
-            *(slash + 1) = '\0';
-            strcat(exe_dir, "bridge.js");
-            candidates[0] = exe_dir;
-        }
-    }
-
-    /* Also check CLUI_BRIDGE_JS env var */
-    const char *env_path = g_getenv("CLUI_BRIDGE_JS");
-    if (env_path) {
-        char *contents = NULL;
-        gsize length = 0;
-        if (g_file_get_contents(env_path, &contents, &length, NULL)) {
-            return contents;
-        }
-    }
-
-    for (int i = 0; i < 3; i++) {
-        if (!candidates[i]) continue;
-        char *contents = NULL;
-        gsize length = 0;
-        if (g_file_get_contents(candidates[i], &contents, &length, NULL)) {
-            g_message("Loaded bridge.js from %s", candidates[i]);
-            return contents;
-        }
-    }
-
-    g_warning("bridge.js not found — window.clui will be unavailable");
-    return NULL;
-}
-
 /* ─── Cleanup ─── */
 
 static void
@@ -544,6 +506,21 @@ deferred_input_region_clear(gpointer data)
     update_input_region(0, 0, 0, 0);
 }
 
+/* ─── Keyboard Handler ─── */
+
+static gboolean
+on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
+               guint keycode, GdkModifierType state, gpointer data)
+{
+    (void)ctrl; (void)keycode; (void)state; (void)data;
+    if (keyval == GDK_KEY_Escape) {
+        g_application_quit(G_APPLICATION(
+            gtk_window_get_application(main_window)));
+        return TRUE;
+    }
+    return FALSE;
+}
+
 /* ─── Application Activate ─── */
 
 static void
@@ -557,16 +534,18 @@ on_activate(GtkApplication *app, gpointer user_data)
     /* Layer shell: overlay, non-activating, click-through */
     setup_layer_shell(main_window);
 
-    /* Load bridge.js for window.clui API injection */
-    char *bridge_js = load_bridge_js();
-
     /* Content URL */
     const char *content_url = g_getenv(CONTENT_URL_ENV);
     if (!content_url) content_url = CONTENT_URL_DEFAULT;
 
-    /* WebKitGTK webview with transparent background */
-    setup_webview(main_window, content_url, bridge_js);
-    g_free(bridge_js);
+    /* WebKitGTK webview — bridge.js is served inline via Vite HTML */
+    setup_webview(main_window, content_url);
+
+    /* ESC key closes the overlay */
+    GtkEventController *key_ctrl = gtk_event_controller_key_new();
+    g_signal_connect(key_ctrl, "key-pressed",
+                     G_CALLBACK(on_key_pressed), NULL);
+    gtk_widget_add_controller(GTK_WIDGET(main_window), key_ctrl);
 
     /* Start with empty input region (fully click-through) until renderer
        reports its interactive bounds */

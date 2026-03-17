@@ -135,13 +135,17 @@ Try:
 - `Cmd+Shift+K`
 - Confirm app is running from the menu bar tray
 
-## Linux: Gray Window Covers Full Screen
+## Linux: Overlay Is Invisible or Fully White
 
-The GTK4 shell renders a full-screen gray rectangle instead of the 1040x720 pill.
+The GTK4 shell is a full-screen transparent overlay. If it appears invisible (no content) or fully white/opaque, the WebKitGTK compositing mode likely isn't set correctly.
 
-Cause: `gtk4-layer-shell` requires `gtk_widget_set_size_request()` to enforce sizing — `gtk_window_set_default_size()` alone is not reliable on all compositors.
+The shell requires `WEBKIT_DISABLE_COMPOSITING_MODE=1` in the environment to produce a valid ARGB buffer. This is set automatically in `linux/main.ts` when spawning the shell. If running the shell binary directly, set it manually:
 
-Check the build is current:
+```bash
+WEBKIT_DISABLE_COMPOSITING_MODE=1 CLUI_CONTENT_URL=http://127.0.0.1:5173 ./linux/shell/builddir/clui-shell
+```
+
+Also ensure the build is current:
 
 ```bash
 npm run linux:build-shell
